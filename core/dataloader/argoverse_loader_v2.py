@@ -222,7 +222,9 @@ class ArgoverseInMem(InMemoryDataset):
 class ArgoverseInDisk(Dataset):
     def __init__(self, root, transform=None, pre_transform=None):
         super(ArgoverseInDisk, self).__init__(root, transform, pre_transform)
-        self.data, self.slices = torch.load(self.processed_paths[0])
+        # breakpoint()
+        # self.data, self.slices = torch.load(self.processed_paths[0])
+        self.data = torch.load(self.processed_paths[0])
         gc.collect()
 
     @property

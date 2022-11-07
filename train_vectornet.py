@@ -105,7 +105,7 @@ if __name__ == "__main__":
     parser.add_argument("-w", "--num_workers", type=int, default=16,
                         help="dataloader worker size")
 
-    parser.add_argument("-c", "--with_cuda", action="store_true", default=True,
+    parser.add_argument("-c", "--with_cuda", action="store_true", default=False,
                         help="training with CUDA: true, or false")
     # parser.add_argument("-cd", "--cuda_device", type=int, nargs='+', default=[],
     #                     help="CUDA device ids")

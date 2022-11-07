@@ -10,6 +10,7 @@ from torch_geometric.data import DataLoader
 from torch_geometric.nn import DataParallel
 from argoverse.evaluation.eval_forecasting import get_displacement_errors_and_miss_rate
 from argoverse.evaluation.competition_util import generate_forecasting_h5
+from argoverse.utils.mpl_plotting_utils import visualize_centerline
 
 from apex import amp
 from apex.parallel import DistributedDataParallel
@@ -19,6 +20,9 @@ from core.model.TNT import TNT
 from core.optim_schedule import ScheduledOptim
 from core.util.viz_utils import show_pred_and_gt
 from core.loss import TNTLoss
+
+import pickle
+import re
 
 
 class TNTTrainer(Trainer):
@@ -32,7 +36,7 @@ class TNTTrainer(Trainer):
                  batch_size: int = 1,
                  num_workers: int = 1,
                  num_global_graph_layer=1,
-                 horizon: int = 30,
+                 horizon: int = 30,  #30
                  lr: float = 1e-3,
                  betas=(0.9, 0.999),
                  weight_decay: float = 0.01,
@@ -217,6 +221,7 @@ class TNTTrainer(Trainer):
     def compute_loss(self, data):
         n = data.candidate_len_max[0]
         data.y = data.y.view(-1, self.horizon, 2).cumsum(axis=1)
+        
         pred, aux_out, aux_gt = self.model(data)
 
         gt = {
@@ -224,7 +229,6 @@ class TNTTrainer(Trainer):
             "offset": data.offset_gt.view(-1, 2),
             "y": data.y.view(-1, self.horizon * 2)
         }
-
         return self.criterion(pred, gt, aux_out, aux_gt)
 
     def test(self,
@@ -243,6 +247,7 @@ class TNTTrainer(Trainer):
         self.model.eval()
 
         forecasted_trajectories, gt_trajectories = {}, {}
+        pre_targets = {}
 
         # k = self.model.k if not self.multi_gpu else self.model.module.k
         k = self.model.k
@@ -270,7 +275,7 @@ class TNTTrainer(Trainer):
                     out = self.model.module(data.to(self.device))
                     # out = self.model.inference(data.to(self.device))
                 else:
-                    out = self.model.inference(data.to(self.device))
+                    out, predcited_targets = self.model.inference_2(data.to(self.device))
                 dim_out = len(out.shape)
 
                 # debug
@@ -287,6 +292,8 @@ class TNTTrainer(Trainer):
                                                        for pred_y_k in pred_y[batch_id]]
                     gt_trajectories[seq_id] = self.convert_coord(gt[batch_id], origs[batch_id], rots[batch_id]) \
                         if convert_coordinate else gt[batch_id]
+                    
+                    pre_targets[seq_id] = predcited_targets[batch_id]
 
         # compute the metric
         if compute_metric:
@@ -300,19 +307,123 @@ class TNTTrainer(Trainer):
             print("[TNTTrainer]: The test result: {};".format(metric_results))
 
         # plot the result
+        # if plot:
+        #     fig, ax = plt.subplots()
+        #     for key in forecasted_trajectories.keys():
+        #         ax.set_xlim(-15, 15)
+        #         show_pred_and_gt(ax, gt_trajectories[key], forecasted_trajectories[key])
+        #         plt.pause(3)
+        #         ax.clear()
+        
+        # if plot:
+        #     overall = {}
+        #     overall['gt_trajectories'] = gt_trajectories
+        #     overall['forecasted_trajectories'] = forecasted_trajectories
+        #     overall['predicted_targets'] = pre_targets
+        #     import pickle
+        #     with open("/home/kyber/Desktop/unused/TNT/trajectories_targets_smarts.pickle", "wb") as file:
+        #         pickle.dump(overall, file, pickle.HIGHEST_PROTOCOL)
+        
+        # if plot:
+        #     for key in forecasted_trajectories.keys():
+        #         fig = plt.figure(0, figsize=(8, 7))
+        #         fig.clear()
+        #         plt.plot(gt_trajectories[key][:, 0], gt_trajectories[key][:, 1], color='orange', alpha=1, linewidth=1, zorder=15)
+        #         for i in range(len(forecasted_trajectories[key])):
+        #             plt.plot(forecasted_trajectories[key][i][:, 0], forecasted_trajectories[key][i][:, 1], color='green', alpha=1, linewidth=1, zorder=15)
+        #             # plt.show()
+        #         plt.savefig('/home/kyber/Desktop/unused/TNT/plot_wo_map/{}.png'.format(key))
+
         if plot:
-            fig, ax = plt.subplots()
-            for key in forecasted_trajectories.keys():
-                ax.set_xlim(-15, 15)
-                show_pred_and_gt(ax, gt_trajectories[key], forecasted_trajectories[key])
-                plt.pause(3)
-                ax.clear()
+            self.plot(gt_trajectories, forecasted_trajectories, pre_targets)
+
 
         # todo: save the output in argoverse format
         if save_pred:
             for key in forecasted_trajectories.keys():
                 forecasted_trajectories[key] = np.asarray(forecasted_trajectories[key])
             generate_forecasting_h5(forecasted_trajectories, self.save_folder)
+    
+    def plot(self, gt_trajectories, forecasted_trajectories, pre_targets):
+        vehicle_data = {}
+        vehicle_data['gt_trajectories'] = gt_trajectories
+        vehicle_data['forecasted_trajectories'] = forecasted_trajectories
+        vehicle_data['predicted_targets'] = pre_targets
+
+        vehicle_ids = []
+        for filename in os.listdir('/home/kyber/Desktop/unused/TNT/dataset/interm_data/val_intermediate/raw/'):
+            if filename.endswith(".pkl"):
+                match = re.search("(.*).pkl", filename)
+                assert match is not None
+                vehicle_id = match.group(1)
+                if vehicle_id not in vehicle_ids:
+                    vehicle_ids.append(vehicle_id)
+
+        for id in vehicle_ids:
+            with open('/home/kyber/Desktop/unused/TNT/dataset/interm_data/val_intermediate/raw/' + "{}.pkl".format(id), "rb") as f:
+                data = pickle.load(f)
+                self.visualize_data(data, vehicle_data)
+    
+    def visualize_data(self, data, vehicle_data):
+        """
+        visualize the extracted data, and exam the data
+        """
+        fig = plt.figure(0, figsize=(8, 7))
+        fig.clear()
+
+        # visualize the centerlines
+        lines_ctrs = data['graph'][0]['ctrs']
+        lines_feats = data['graph'][0]['feats']
+        lane_idcs = data['graph'][0]['lane_idcs']
+        for i in np.unique(lane_idcs):
+            line_ctr = lines_ctrs[lane_idcs == i]
+            line_feat = lines_feats[lane_idcs == i]
+            line_str = (2.0 * line_ctr - line_feat) / 2.0
+            line_end = (2.0 * line_ctr[-1, :] + line_feat[-1, :]) / 2.0
+            line = np.vstack([line_str, line_end.reshape(-1, 2)])
+            visualize_centerline(line)
+
+        # visualize the trajectory
+        past_trajs = data['feats'][0][:, :, :2]
+        has_obss = data['has_obss'][0]
+        
+        obs = past_trajs[0]
+        gt_trj = vehicle_data['gt_trajectories'][int(data['seq_id'][0])]
+        pred_trjs = vehicle_data['forecasted_trajectories'][int(data['seq_id'][0])]
+        predicted_targets = vehicle_data['predicted_targets'][int(data['seq_id'][0])]
+
+        plt.plot(obs[:, 0], obs[:, 1], color='red', alpha=1, linewidth=1, zorder=15)
+        plt.plot(gt_trj[:, 0], gt_trj[:, 1], color='orange', alpha=1, linewidth=1, zorder=15)
+        for i in range(len(pred_trjs)):
+            plt.plot(pred_trjs[i][:, 0], pred_trjs[i][:, 1], color='green', alpha=1, linewidth=1, zorder=15)
+        
+        # x = predicted_targets[:,0]
+        # y = predicted_targets[:,1]
+        # plt.scatter(x,y)
+
+        plt.xlabel("Map X")
+        plt.ylabel("Map Y")
+        plt.axis("off")
+
+        plt.savefig('/home/kyber/Desktop/plot_check/{}.png'.format(data['seq_id'][0]), dpi=600)
+
+
+    def predict(self, data, convert_coordinate=False):
+        k = 6
+        horizon = 30
+
+        with torch.no_grad():
+            orig = data.orig.numpy()
+            rot = data.rot.numpy()
+
+            out = self.model.inference(data.to(self.device))
+            dim_out = len(out.shape)
+            pred_y = out.unsqueeze(dim_out).view((1, k, horizon, 2)).cpu().numpy()
+
+            forecasted_trajectories = [self.convert_coord(pred_y_k, orig, rot)
+                                                if convert_coordinate else pred_y_k
+                                        for pred_y_k in pred_y[0]]
+        return forecasted_trajectories
 
     # function to convert the coordinates of trajectories from relative to world
     def convert_coord(self, traj, orig, rot):

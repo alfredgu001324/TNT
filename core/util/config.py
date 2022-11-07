@@ -23,6 +23,6 @@ LANE_RADIUS = 30
 OBJ_RADIUS = 30
 
 DATA_DIR = '../../dataset/raw_data'
-OBS_LEN = 20
+OBS_LEN = 20 #20
 
 INTERMEDIATE_DATA_DIR = '../../dataset/interm_data_10_feat'

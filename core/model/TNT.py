@@ -21,7 +21,7 @@ from core.dataloader.argoverse_loader_v2 import GraphData, ArgoverseInMem
 class TNT(nn.Module):
     def __init__(self,
                  in_channels=8,
-                 horizon=30,
+                 horizon=30, #30
                  num_subgraph_layers=3,
                  num_global_graph_layer=1,
                  subgraph_width=64,
@@ -33,7 +33,7 @@ class TNT(nn.Module):
                  motion_esti_hid=64,
                  score_sel_hid=64,
                  temperature=0.01,
-                 k=6,
+                 k=6,   #6
                  device=torch.device("cpu")
                  ):
         """
@@ -175,6 +175,38 @@ class TNT(nn.Module):
         score = self.traj_score_layer(target_feat, traj_pred)
 
         return self.traj_selection(traj_pred, score).view(batch_size, self.k, self.horizon, 2)
+
+    
+    def inference_2(self, data):
+        """
+        predict the top k most-likely trajectories
+        :param data: observed sequence data
+        :return:
+        """
+        n = data.candidate_len_max[0]
+        target_candidate = data.candidate.view(-1, n, 2)    # [batch_size, N, 2]
+        batch_size, _, _ = target_candidate.size()
+
+        global_feat, _, _ = self.backbone(data)     # [batch_size, time_step_len, global_graph_width]
+        target_feat = global_feat[:, 0].unsqueeze(1)
+
+        # predict the prob. of target candidates and selected the most likely M candidate
+        target_prob, offset_pred = self.target_pred_layer(target_feat, target_candidate)
+        _, indices = target_prob.topk(self.m, dim=1)
+        batch_idx = torch.vstack([torch.arange(0, batch_size, device=self.device) for _ in range(self.m)]).T
+        target_pred_se, offset_pred_se = target_candidate[batch_idx, indices], offset_pred[batch_idx, indices]
+
+        # # DEBUG
+        # gt = data.y.unsqueeze(1).view(batch_size, -1, 2).cumsum(axis=1)
+
+        # trajectory estimation for the m predicted target location
+        traj_pred = self.motion_estimator(target_feat, target_pred_se + offset_pred_se)
+
+        # score the predicted trajectory and select the top k trajectory
+        score = self.traj_score_layer(target_feat, traj_pred)
+
+        return self.traj_selection(traj_pred, score).view(batch_size, self.k, self.horizon, 2), (target_pred_se + offset_pred_se).cpu().numpy()
+
 
     def candidate_sampling(self, data):
         """
